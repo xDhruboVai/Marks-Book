@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const marksRoutes = require('./routes/marks');
+const authRoutes = require('./routes/auth');
 
 const app = express();
 const port = process.env.PORT || 4000;
@@ -31,6 +32,8 @@ app.get('/health', (_req, res) => {
   res.json({ success: true, status: 'ok' });
 });
 
+app.use('/auth', authRoutes);
+app.use('/api/auth', authRoutes);
 app.use('/marks', marksRoutes);
 app.use('/api/marks', marksRoutes);
 

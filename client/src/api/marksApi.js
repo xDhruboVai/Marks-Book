@@ -4,6 +4,7 @@ const API_BASE_URL = (
   'http://localhost:8000'
 ).replace(/\/+$/, '');
 const TERMS_BASE_URL = `${API_BASE_URL}/marks/terms`;
+const SEMESTERS_BASE_URL = `${API_BASE_URL}/marks/semesters`;
 
 async function parseResponse(response) {
   const body = await response.json().catch(() => ({}));
@@ -16,6 +17,11 @@ async function parseResponse(response) {
 
 export async function fetchTerms(userId) {
   const response = await fetch(`${TERMS_BASE_URL}/${userId}`);
+  return parseResponse(response);
+}
+
+export async function fetchSemesters(userId) {
+  const response = await fetch(`${SEMESTERS_BASE_URL}/${userId}`);
   return parseResponse(response);
 }
 

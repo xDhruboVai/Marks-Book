@@ -130,6 +130,33 @@ router.get('/terms/:userId', async (req, res) => {
   }
 });
 
+router.get('/semesters/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    if (!UUID_REGEX.test(userId)) {
+      return fail(res, 400, 'userId must be a valid UUID');
+    }
+
+    const supabase = getSupabaseClient();
+
+    const { data, error } = await supabase
+      .from('semesters')
+      .select('id, user_id, name, term_index, term_gpa, term_credits, cumulative_cgpa')
+      .eq('user_id', userId)
+      .order('term_index', { ascending: false })
+      .order('id', { ascending: false });
+
+    if (error) {
+      return fail(res, 500, 'Failed to fetch semesters', error.message);
+    }
+
+    return ok(res, data || []);
+  } catch (err) {
+    return fail(res, 500, 'Unexpected server error', err.message);
+  }
+});
+
 router.put('/terms/:termId', async (req, res) => {
   try {
     const termId = parseTermId(req.params.termId);
