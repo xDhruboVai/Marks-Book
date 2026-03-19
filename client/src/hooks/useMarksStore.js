@@ -70,6 +70,67 @@ export function useMarksStore() {
     [persist, state]
   );
 
+  const updateLocalTerm = useCallback(
+    (termId, termName) => {
+      const cleaned = termName.trim();
+      if (!cleaned) {
+        throw new Error('Term name is required');
+      }
+
+      const termExists = state.terms.some((term) => String(term.id) === String(termId));
+      if (!termExists) {
+        throw new Error('Term not found in guest mode');
+      }
+
+      const duplicateExists = state.terms.some(
+        (term) =>
+          String(term.id) !== String(termId) &&
+          term.term_name.toLowerCase() === cleaned.toLowerCase()
+      );
+      if (duplicateExists) {
+        throw new Error('Term already exists in guest mode');
+      }
+
+      const now = new Date().toISOString();
+      const nextTerms = state.terms.map((term) => {
+        if (String(term.id) !== String(termId)) {
+          return term;
+        }
+
+        return {
+          ...term,
+          term_name: cleaned,
+          updated_at: now,
+        };
+      });
+
+      const next = {
+        ...state,
+        terms: nextTerms,
+      };
+      persist(next);
+
+      return nextTerms.find((term) => String(term.id) === String(termId));
+    },
+    [persist, state]
+  );
+
+  const deleteLocalTerm = useCallback(
+    (termId) => {
+      const termExists = state.terms.some((term) => String(term.id) === String(termId));
+      if (!termExists) {
+        throw new Error('Term not found in guest mode');
+      }
+
+      const next = {
+        ...state,
+        terms: state.terms.filter((term) => String(term.id) !== String(termId)),
+      };
+      persist(next);
+    },
+    [persist, state]
+  );
+
   const terms = useMemo(() => state.terms, [state.terms]);
 
   return {
@@ -77,5 +138,7 @@ export function useMarksStore() {
     userId: state.userId,
     terms,
     createLocalTerm,
+    updateLocalTerm,
+    deleteLocalTerm,
   };
 }

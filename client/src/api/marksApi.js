@@ -1,4 +1,9 @@
-const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || 'http://localhost:4000';
+const API_BASE_URL = (
+  process.env.REACT_APP_API_URL ||
+  process.env.REACT_APP_API_BASE_URL ||
+  'http://localhost:8000'
+).replace(/\/+$/, '');
+const TERMS_BASE_URL = `${API_BASE_URL}/marks/terms`;
 
 async function parseResponse(response) {
   const body = await response.json().catch(() => ({}));
@@ -10,17 +15,37 @@ async function parseResponse(response) {
 }
 
 export async function fetchTerms(userId) {
-  const response = await fetch(`${API_BASE_URL}/marks/terms/${userId}`);
+  const response = await fetch(`${TERMS_BASE_URL}/${userId}`);
   return parseResponse(response);
 }
 
 export async function createTerm(payload) {
-  const response = await fetch(`${API_BASE_URL}/marks/terms`, {
+  const response = await fetch(TERMS_BASE_URL, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(payload),
+  });
+
+  return parseResponse(response);
+}
+
+export async function updateTerm(termId, payload) {
+  const response = await fetch(`${TERMS_BASE_URL}/${termId}`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+
+  return parseResponse(response);
+}
+
+export async function deleteTerm(termId) {
+  const response = await fetch(`${TERMS_BASE_URL}/${termId}`, {
+    method: 'DELETE',
   });
 
   return parseResponse(response);

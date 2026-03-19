@@ -1,14 +1,38 @@
 import { useEffect, useMemo, useState } from 'react';
-import { createTerm, fetchTerms } from './api/marksApi';
+import { createTerm, deleteTerm, fetchTerms, updateTerm } from './api/marksApi';
 import { useMarksStore } from './hooks/useMarksStore';
 
+function formatDate(value) {
+  if (!value) {
+    return 'No date';
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return 'Unknown date';
+  }
+
+  return parsed.toLocaleDateString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  });
+}
+
 function App() {
-  const { terms: localTerms, createLocalTerm } = useMarksStore();
+  const {
+    terms: localTerms,
+    createLocalTerm,
+    updateLocalTerm,
+    deleteLocalTerm,
+  } = useMarksStore();
   const [termName, setTermName] = useState('');
   const [apiTerms, setApiTerms] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  const [editingTermId, setEditingTermId] = useState(null);
+  const [editingTermName, setEditingTermName] = useState('');
 
   const testUserId = (process.env.REACT_APP_TEST_USER_ID || '').trim();
   const mode = testUserId ? 'api' : 'guest';
@@ -16,6 +40,32 @@ function App() {
   const terms = useMemo(() => {
     return mode === 'api' ? apiTerms : localTerms;
   }, [mode, apiTerms, localTerms]);
+
+  const latestTerm = terms.length ? terms[0] : null;
+  const stats = useMemo(
+    () => [
+      {
+        label: 'Total Terms',
+        value: String(terms.length),
+        tone: 'neutral',
+      },
+      {
+        label: 'Latest Term',
+        value: latestTerm ? latestTerm.term_name : 'Not set',
+        tone: 'info',
+      },
+      {
+        label: 'Storage',
+        value: mode === 'api' ? 'Supabase API' : 'Guest Local',
+        tone: 'accent',
+        note:
+          mode === 'api'
+            ? 'Your progress is synced to your account.'
+            : 'Create an account or log in to save your progress.',
+      },
+    ],
+    [latestTerm, mode, terms.length]
+  );
 
   const refreshApiTerms = async () => {
     if (!testUserId) {
@@ -63,58 +113,180 @@ function App() {
     }
   };
 
+  const startEditing = (term) => {
+    setError('');
+    setSuccess('');
+    setEditingTermId(String(term.id));
+    setEditingTermName(term.term_name);
+  };
+
+  const cancelEditing = () => {
+    setEditingTermId(null);
+    setEditingTermName('');
+  };
+
+  const onSaveEdit = async (termId) => {
+    setError('');
+    setSuccess('');
+
+    try {
+      if (mode === 'guest') {
+        const updated = updateLocalTerm(termId, editingTermName);
+        setSuccess(`Updated term to "${updated.term_name}" locally`);
+      } else {
+        await updateTerm(termId, {
+          term_name: editingTermName.trim(),
+          linked_semester_id: null,
+        });
+        await refreshApiTerms();
+        setSuccess(`Updated term to "${editingTermName.trim()}" in API`);
+      }
+      cancelEditing();
+    } catch (err) {
+      setError(err.message || 'Could not update term');
+    }
+  };
+
+  const onDeleteTerm = async (termId) => {
+    setError('');
+    setSuccess('');
+
+    const confirmed = window.confirm('Delete this term?');
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      if (mode === 'guest') {
+        deleteLocalTerm(termId);
+        setSuccess('Deleted term locally');
+      } else {
+        await deleteTerm(termId);
+        await refreshApiTerms();
+        setSuccess('Deleted term from API');
+      }
+
+      if (String(editingTermId) === String(termId)) {
+        cancelEditing();
+      }
+    } catch (err) {
+      setError(err.message || 'Could not delete term');
+    }
+  };
+
   return (
     <main className="app-shell">
-      <header className="app-header">
-        <div>
-          <h1>Marks Book</h1>
-          <p className="muted">Baby Step 1: Create and list terms</p>
-        </div>
-        <span className="pill">Mode: {mode === 'api' ? 'API' : 'Guest Local'}</span>
-      </header>
-
-      <section className="grid">
-        <article className="panel">
-          <h2>Create Term</h2>
-          <p className="muted">
-            Enter a semester name (for example: Fall 2026).
+      <section className="hero reveal">
+        <div className="hero-content">
+          <p className="eyebrow">Marks Book Studio</p>
+          <h1>Design your academic term with confidence.</h1>
+          <p className="muted hero-copy">
+            A focused workspace for planning semesters, tracking progress, and preparing for
+            deeper course analytics.
           </p>
-          <form onSubmit={onSubmit}>
+          <div className="hero-pills">
+            <span className="pill tone-accent">Mode: {mode === 'api' ? 'API Sync' : 'Guest Local'}</span>
+          </div>
+        </div>
+
+        <div className="stats-grid">
+          {stats.map((stat, index) => (
+            <article key={stat.label} className={`stat-card stagger-${(index % 3) + 1} ${stat.tone}`}>
+              <p className="stat-label">{stat.label}</p>
+              <p className="stat-value">{stat.value}</p>
+              {stat.note ? <p className="stat-note">{stat.note}</p> : null}
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section className="workspace-grid">
+        <article className="panel reveal delay-1 create-panel">
+          <div className="panel-head">
+            <h2>Create Term</h2>
+          </div>
+          <p className="muted">Give your term a clear title, such as Fall 2026 or Summer Intensive.</p>
+
+          <form onSubmit={onSubmit} className="create-form" aria-label="Create term form">
+            <label htmlFor="term-name" className="field-label">
+              Term Name
+            </label>
             <div className="row">
               <input
+                id="term-name"
                 value={termName}
                 onChange={(event) => setTermName(event.target.value)}
                 placeholder="Fall 2026"
                 maxLength={80}
               />
               <button type="submit" disabled={loading || !termName.trim()}>
-                Save
+                Save Term
               </button>
             </div>
           </form>
-          {error ? <p className="error">{error}</p> : null}
-          {success ? <p className="success">{success}</p> : null}
+
+          {error ? <p className="feedback error">{error}</p> : null}
+          {success ? <p className="feedback success">{success}</p> : null}
         </article>
 
-        <article className="panel">
-          <div className="app-header" style={{ marginBottom: '0.5rem' }}>
-            <h2 style={{ marginBottom: 0 }}>Terms</h2>
+        <article className="panel reveal delay-2 terms-panel">
+          <div className="panel-head terms-head">
+            <div>
+              <h2>Term Library</h2>
+              <p className="muted">Total terms: {terms.length}</p>
+            </div>
             {mode === 'api' ? (
               <button type="button" className="secondary" onClick={refreshApiTerms} disabled={loading}>
                 Refresh
               </button>
             ) : null}
           </div>
-          <p className="muted">Total: {terms.length}</p>
 
-          {loading ? <p>Loading...</p> : null}
-          {!terms.length && !loading ? <p className="muted">No terms yet.</p> : null}
+          {loading ? <p className="status-line">Loading terms...</p> : null}
+          {!terms.length && !loading ? <p className="empty-state">No terms yet. Create your first one to get started.</p> : null}
 
           <ol className="term-list">
-            {terms.map((term) => (
-              <li key={term.id}>
-                {term.term_name}
-                <span className="muted"> ({new Date(term.created_at).toLocaleDateString()})</span>
+            {terms.map((term, index) => (
+              <li key={term.id} className={`term-row stagger-${(index % 3) + 1}`}>
+                <div className="term-main">
+                  {String(editingTermId) === String(term.id) ? (
+                    <input
+                      value={editingTermName}
+                      onChange={(event) => setEditingTermName(event.target.value)}
+                      maxLength={80}
+                    />
+                  ) : (
+                    <>
+                      <p className="term-name">{term.term_name}</p>
+                      <p className="term-meta">Created {formatDate(term.created_at)}</p>
+                    </>
+                  )}
+                </div>
+                <div className="term-actions">
+                  {String(editingTermId) === String(term.id) ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => onSaveEdit(term.id)}
+                        disabled={loading || !editingTermName.trim()}
+                      >
+                        Save
+                      </button>
+                      <button type="button" className="secondary" onClick={cancelEditing} disabled={loading}>
+                        Cancel
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button type="button" className="secondary" onClick={() => startEditing(term)} disabled={loading}>
+                        Edit
+                      </button>
+                      <button type="button" className="secondary danger" onClick={() => onDeleteTerm(term.id)} disabled={loading}>
+                        Delete
+                      </button>
+                    </>
+                  )}
+                </div>
               </li>
             ))}
           </ol>
