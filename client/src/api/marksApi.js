@@ -1,10 +1,12 @@
 const API_BASE_URL = (
   process.env.REACT_APP_API_URL ||
   process.env.REACT_APP_API_BASE_URL ||
-  'http://localhost:8000'
+  'http://localhost:8001'
 ).replace(/\/+$/, '');
 const TERMS_BASE_URL = `${API_BASE_URL}/marks/terms`;
 const SEMESTERS_BASE_URL = `${API_BASE_URL}/marks/semesters`;
+const CURRENT_COURSES_BASE_URL = `${API_BASE_URL}/marks/courses/current`;
+const COURSE_IMPORT_BASE_URL = `${API_BASE_URL}/marks/courses/import`;
 
 async function parseResponse(response) {
   const body = await response.json().catch(() => ({}));
@@ -22,6 +24,23 @@ export async function fetchTerms(userId) {
 
 export async function fetchSemesters(userId) {
   const response = await fetch(`${SEMESTERS_BASE_URL}/${userId}`);
+  return parseResponse(response);
+}
+
+export async function fetchCurrentSemesterCourses(userId) {
+  const response = await fetch(`${CURRENT_COURSES_BASE_URL}/${userId}`);
+  return parseResponse(response);
+}
+
+export async function importCurrentSemesterCourses(payload) {
+  const response = await fetch(COURSE_IMPORT_BASE_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+
   return parseResponse(response);
 }
 

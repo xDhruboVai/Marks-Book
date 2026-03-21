@@ -1,7 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
+import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { createAccount } from './api/authApi';
-import { createTerm, deleteTerm, fetchSemesters, fetchTerms, updateTerm } from './api/marksApi';
+import {
+  createTerm,
+  deleteTerm,
+  fetchCurrentSemesterCourses,
+  fetchSemesters,
+  fetchTerms,
+  importCurrentSemesterCourses,
+  updateTerm,
+} from './api/marksApi';
 import { hasSupabaseEnv, supabase, supabaseEnvMessage } from './api/supabaseClient';
 import { PROGRAM_OPTIONS } from './constants/programs';
 import { useMarksStore } from './hooks/useMarksStore';
@@ -25,6 +33,18 @@ function formatDate(value) {
 
 function buildProgramLabel(program) {
   return `${program.level} · ${program.title} (${program.code}) · ${program.credits}`;
+}
+
+function buildCourseSummaryText(course) {
+  const parts = [course.course_code || 'Untitled'];
+  if (course.title) {
+    parts.push(course.title);
+  }
+  if (course.credit) {
+    parts.push(`${course.credit} credit`);
+  }
+
+  return parts.join(' · ');
 }
 
 function toPositiveNumber(value) {
@@ -116,6 +136,14 @@ function DashboardPage({ session, onLogout }) {
   const [editingTermId, setEditingTermId] = useState(null);
   const [editingTermName, setEditingTermName] = useState('');
   const [loggingOut, setLoggingOut] = useState(false);
+  const [currentSemesterCourses, setCurrentSemesterCourses] = useState([]);
+  const [importPromptDismissed, setImportPromptDismissed] = useState(false);
+  const [importPanelOpen, setImportPanelOpen] = useState(false);
+  const [importTargetMode, setImportTargetMode] = useState('auto-create');
+  const [importTargetTermId, setImportTargetTermId] = useState('');
+  const [importNewTermName, setImportNewTermName] = useState('');
+  const [selectedCurrentCourseIds, setSelectedCurrentCourseIds] = useState([]);
+  const [importingCourses, setImportingCourses] = useState(false);
 
   const testUserId = (process.env.REACT_APP_TEST_USER_ID || '').trim();
   const activeUserId = session?.user?.id || testUserId;
@@ -125,6 +153,16 @@ function DashboardPage({ session, onLogout }) {
   const terms = useMemo(() => {
     return mode === 'api' ? apiTerms : localTerms;
   }, [mode, apiTerms, localTerms]);
+
+  const editableTerms = useMemo(() => {
+    return terms.filter((term) => term.source_type !== 'semesters');
+  }, [terms]);
+
+  const showImportPrompt =
+    isAuthenticated &&
+    mode === 'api' &&
+    currentSemesterCourses.length > 0 &&
+    !importPromptDismissed;
 
   const latestTerm = terms.length ? terms[0] : null;
   const stats = useMemo(
@@ -174,6 +212,20 @@ function DashboardPage({ session, onLogout }) {
     }
   }, [activeUserId]);
 
+  const refreshCurrentSemesterCourses = useCallback(async () => {
+    if (!session?.user?.id) {
+      setCurrentSemesterCourses([]);
+      return;
+    }
+
+    try {
+      const data = await fetchCurrentSemesterCourses(session.user.id);
+      setCurrentSemesterCourses(Array.isArray(data) ? data : []);
+    } catch (err) {
+      setError(err.message || 'Failed to load GradeStack current semester courses');
+    }
+  }, [session?.user?.id]);
+
   useEffect(() => {
     if (mode === 'api') {
       refreshApiTerms();
@@ -182,8 +234,137 @@ function DashboardPage({ session, onLogout }) {
     setApiTerms([]);
   }, [mode, refreshApiTerms]);
 
+  useEffect(() => {
+    if (!isAuthenticated || mode !== 'api') {
+      setCurrentSemesterCourses([]);
+      setImportPanelOpen(false);
+      setImportPromptDismissed(false);
+      setSelectedCurrentCourseIds([]);
+      return;
+    }
+
+    refreshCurrentSemesterCourses();
+  }, [isAuthenticated, mode, refreshCurrentSemesterCourses]);
+
+  useEffect(() => {
+    const availableIds = new Set(currentSemesterCourses.map((course) => Number(course.id)));
+
+    setSelectedCurrentCourseIds((previous) => {
+      const kept = previous.filter((courseId) => availableIds.has(Number(courseId)));
+      if (kept.length || !currentSemesterCourses.length) {
+        return kept;
+      }
+      return currentSemesterCourses.map((course) => Number(course.id));
+    });
+
+    if (!currentSemesterCourses.length) {
+      setImportPanelOpen(false);
+      setImportPromptDismissed(false);
+      setImportTargetTermId('');
+    }
+  }, [currentSemesterCourses]);
+
   const onGoToAuth = () => {
     navigate('/auth');
+  };
+
+  const onOpenTerm = (termId) => {
+    navigate(`/dashboard/terms/${encodeURIComponent(String(termId))}`);
+  };
+
+  const onOpenImportPanel = () => {
+    setImportPromptDismissed(false);
+    setImportPanelOpen(true);
+    if (!selectedCurrentCourseIds.length) {
+      setSelectedCurrentCourseIds(currentSemesterCourses.map((course) => Number(course.id)));
+    }
+  };
+
+  const onToggleImportCourse = (courseId) => {
+    const normalizedId = Number(courseId);
+    setSelectedCurrentCourseIds((previous) => {
+      if (previous.includes(normalizedId)) {
+        return previous.filter((id) => id !== normalizedId);
+      }
+      return [...previous, normalizedId];
+    });
+  };
+
+  const onSelectAllImportCourses = () => {
+    setSelectedCurrentCourseIds(currentSemesterCourses.map((course) => Number(course.id)));
+  };
+
+  const onClearImportSelection = () => {
+    setSelectedCurrentCourseIds([]);
+  };
+
+  const onImportCourses = async () => {
+    setError('');
+    setSuccess('');
+
+    if (!session?.user?.id) {
+      setError('Please log in first to import courses from GradeStack.');
+      return;
+    }
+
+    if (!selectedCurrentCourseIds.length) {
+      setError('Select at least one course to import.');
+      return;
+    }
+
+    if (importTargetMode === 'existing' && !importTargetTermId) {
+      setError('Select a target term for import.');
+      return;
+    }
+
+    setImportingCourses(true);
+
+    try {
+      const payload = {
+        user_id: session.user.id,
+        course_ids: selectedCurrentCourseIds,
+        target_mode: importTargetMode,
+      };
+
+      if (importTargetMode === 'existing') {
+        payload.target_term_id = Number(importTargetTermId);
+      }
+
+      if (importTargetMode === 'auto-create' && importNewTermName.trim()) {
+        payload.new_term_name = importNewTermName.trim();
+      }
+
+      const result = await importCurrentSemesterCourses(payload);
+
+      await Promise.all([refreshApiTerms(), refreshCurrentSemesterCourses()]);
+
+      const summary = result?.summary || {};
+      const importedCount = Number(summary.imported_count || 0);
+      const skippedCount = Number(summary.skipped_count || 0);
+      const failedCount = Number(summary.failed_count || 0);
+
+      if (importedCount > 0) {
+        setSuccess(
+          `Imported ${importedCount} course(s) into ${result?.target_term?.term_name || 'target term'}${
+            skippedCount ? `, skipped ${skippedCount}` : ''
+          }${failedCount ? `, failed ${failedCount}` : ''}.`
+        );
+      } else {
+        setSuccess(
+          `No new courses were imported${skippedCount ? ` (skipped ${skippedCount})` : ''}${
+            failedCount ? ` (failed ${failedCount})` : ''
+          }.`
+        );
+      }
+
+      setImportPanelOpen(false);
+      setImportTargetTermId('');
+      setImportNewTermName('');
+    } catch (err) {
+      setError(err.message || 'Could not import GradeStack courses');
+    } finally {
+      setImportingCourses(false);
+    }
   };
 
   const onLogOut = async () => {
@@ -193,6 +374,10 @@ function DashboardPage({ session, onLogout }) {
     try {
       await onLogout();
       setSuccess('Logged out. You are now using guest local mode.');
+      setCurrentSemesterCourses([]);
+      setImportPanelOpen(false);
+      setImportPromptDismissed(false);
+      setSelectedCurrentCourseIds([]);
     } catch (err) {
       setError(err.message || 'Could not log out');
     } finally {
@@ -381,6 +566,144 @@ function DashboardPage({ session, onLogout }) {
             ) : null}
           </div>
 
+          {showImportPrompt ? (
+            <div className="import-banner">
+              <p className="import-banner-title">
+                GradeStack Current Semester: {currentSemesterCourses.length} course(s) available to import
+              </p>
+              <p className="muted import-banner-copy">
+                Import selected courses with full assessments and scores into a Marks term.
+              </p>
+              <div className="import-banner-actions">
+                <button type="button" onClick={onOpenImportPanel}>
+                  {importPanelOpen ? 'Edit Import Selection' : 'Start Import'}
+                </button>
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => {
+                    setImportPromptDismissed(true);
+                    setImportPanelOpen(false);
+                  }}
+                >
+                  Dismiss
+                </button>
+              </div>
+
+              {importPanelOpen ? (
+                <div className="import-panel">
+                  <div className="import-panel-head">
+                    <p className="import-panel-title">
+                      Selected: {selectedCurrentCourseIds.length}/{currentSemesterCourses.length}
+                    </p>
+                    <div className="import-panel-inline-actions">
+                      <button type="button" className="secondary" onClick={onSelectAllImportCourses}>
+                        Select All
+                      </button>
+                      <button type="button" className="secondary" onClick={onClearImportSelection}>
+                        Clear
+                      </button>
+                    </div>
+                  </div>
+
+                  <ul className="import-course-list">
+                    {currentSemesterCourses.map((course) => {
+                      const numericId = Number(course.id);
+                      const checked = selectedCurrentCourseIds.includes(numericId);
+                      return (
+                        <li key={course.id} className="import-course-item">
+                          <label className="import-course-label">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => onToggleImportCourse(course.id)}
+                            />
+                            <span>{buildCourseSummaryText(course)}</span>
+                          </label>
+                          <span className="import-course-meta">
+                            {course.assessments_count || 0} assessments, {course.scores_count || 0} scores
+                          </span>
+                        </li>
+                      );
+                    })}
+                  </ul>
+
+                  <div className="import-target-box">
+                    <p className="import-panel-title">Import Target</p>
+                    <label className="import-radio-option">
+                      <input
+                        type="radio"
+                        name="import-target-mode"
+                        value="auto-create"
+                        checked={importTargetMode === 'auto-create'}
+                        onChange={() => setImportTargetMode('auto-create')}
+                      />
+                      Auto-create a new term (default)
+                    </label>
+                    <label className="import-radio-option">
+                      <input
+                        type="radio"
+                        name="import-target-mode"
+                        value="existing"
+                        checked={importTargetMode === 'existing'}
+                        onChange={() => setImportTargetMode('existing')}
+                      />
+                      Import into an existing term
+                    </label>
+
+                    {importTargetMode === 'auto-create' ? (
+                      <>
+                        <label htmlFor="import-new-term-name" className="field-label">
+                          Optional New Term Name
+                        </label>
+                        <input
+                          id="import-new-term-name"
+                          placeholder="Leave empty to auto-name from latest semester"
+                          value={importNewTermName}
+                          onChange={(event) => setImportNewTermName(event.target.value)}
+                          maxLength={80}
+                        />
+                      </>
+                    ) : (
+                      <>
+                        <label htmlFor="import-target-term" className="field-label">
+                          Existing Term
+                        </label>
+                        <select
+                          id="import-target-term"
+                          className="select-field"
+                          value={importTargetTermId}
+                          onChange={(event) => setImportTargetTermId(event.target.value)}
+                        >
+                          <option value="">Select a term</option>
+                          {editableTerms.map((term) => (
+                            <option key={term.id} value={term.id}>
+                              {term.term_name}
+                            </option>
+                          ))}
+                        </select>
+                        {!editableTerms.length ? (
+                          <p className="muted import-target-warning">
+                            No editable terms available yet. Create one first or use auto-create.
+                          </p>
+                        ) : null}
+                      </>
+                    )}
+                  </div>
+
+                  <div className="import-banner-actions">
+                    <button type="button" onClick={onImportCourses} disabled={importingCourses}>
+                      {importingCourses ? 'Importing...' : 'Import Selected Courses'}
+                    </button>
+                    <button type="button" className="secondary" onClick={() => setImportPanelOpen(false)}>
+                      Close
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
           {loading ? <p className="status-line">Loading terms...</p> : null}
           {!terms.length && !loading ? <p className="empty-state">No terms yet. Create your first one to get started.</p> : null}
 
@@ -396,7 +719,9 @@ function DashboardPage({ session, onLogout }) {
                     />
                   ) : (
                     <>
-                      <p className="term-name">{term.term_name}</p>
+                      <button type="button" className="term-open-button" onClick={() => onOpenTerm(term.id)}>
+                        <span className="term-name">{term.term_name}</span>
+                      </button>
                       <p className="term-meta">
                         {term.source_type === 'semesters'
                           ? 'Imported from semesters table (read-only)'
@@ -438,6 +763,245 @@ function DashboardPage({ session, onLogout }) {
             ))}
           </ol>
         </article>
+      </section>
+    </main>
+  );
+}
+
+function TermWorkspacePage({ session }) {
+  const navigate = useNavigate();
+  const { termId } = useParams();
+
+  const {
+    terms: localTerms,
+    courses: localCourses,
+    createLocalCourse,
+    deleteLocalCourse,
+  } = useMarksStore();
+
+  const [apiTerms, setApiTerms] = useState([]);
+  const [loadingTerm, setLoadingTerm] = useState(false);
+  const [courseCode, setCourseCode] = useState('');
+  const [courseTitle, setCourseTitle] = useState('');
+  const [courseCredit, setCourseCredit] = useState('3');
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+
+  const testUserId = (process.env.REACT_APP_TEST_USER_ID || '').trim();
+  const activeUserId = session?.user?.id || testUserId;
+  const mode = activeUserId ? 'api' : 'guest';
+
+  useEffect(() => {
+    if (mode !== 'api' || !activeUserId) {
+      setApiTerms([]);
+      return;
+    }
+
+    let mounted = true;
+
+    const loadTerms = async () => {
+      setLoadingTerm(true);
+      setError('');
+
+      try {
+        const [marksTermsData, semestersData] = await Promise.all([
+          fetchTerms(activeUserId),
+          fetchSemesters(activeUserId),
+        ]);
+
+        if (!mounted) {
+          return;
+        }
+        setApiTerms(mapAndMergeTerms(marksTermsData, semestersData));
+      } catch (err) {
+        if (!mounted) {
+          return;
+        }
+        setError(err.message || 'Failed to load term');
+      } finally {
+        if (mounted) {
+          setLoadingTerm(false);
+        }
+      }
+    };
+
+    loadTerms();
+
+    return () => {
+      mounted = false;
+    };
+  }, [activeUserId, mode]);
+
+  const terms = mode === 'api' ? apiTerms : localTerms;
+
+  const selectedTerm = useMemo(() => {
+    return terms.find((term) => String(term.id) === String(termId)) || null;
+  }, [termId, terms]);
+
+  const courses = useMemo(() => {
+    if (mode !== 'guest') {
+      return [];
+    }
+
+    return localCourses.filter((course) => String(course.term_id) === String(termId));
+  }, [localCourses, mode, termId]);
+
+  const onCreateCourse = (event) => {
+    event.preventDefault();
+    setError('');
+    setSuccess('');
+
+    if (mode !== 'guest') {
+      setError('Offline course creation is currently available only in guest mode.');
+      return;
+    }
+
+    try {
+      const created = createLocalCourse(termId, {
+        course_code: courseCode,
+        title: courseTitle,
+        credit: Number(courseCredit),
+      });
+
+      setSuccess(`Course "${created.course_code}" added to ${selectedTerm?.term_name || 'term'}.`);
+      setCourseCode('');
+      setCourseTitle('');
+      setCourseCredit('3');
+    } catch (err) {
+      setError(err.message || 'Could not create course');
+    }
+  };
+
+  const onDeleteCourse = (courseId) => {
+    setError('');
+    setSuccess('');
+
+    const confirmed = window.confirm('Delete this course?');
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      deleteLocalCourse(courseId);
+      setSuccess('Course removed from this term.');
+    } catch (err) {
+      setError(err.message || 'Could not delete course');
+    }
+  };
+
+  return (
+    <main className="app-shell">
+      <section className="panel reveal workspace-detail">
+        <div className="detail-header">
+          <button type="button" className="secondary detail-back" onClick={() => navigate('/dashboard')}>
+            Back to Dashboard
+          </button>
+          <p className="eyebrow">Term Workspace</p>
+          <h1 className="detail-title">{selectedTerm ? selectedTerm.term_name : 'Term'}</h1>
+          <p className="muted detail-copy">
+            {mode === 'guest'
+              ? 'Create and manage multiple courses for this term '
+              : 'API term course management will be added next. Offline guest mode is ready now.'}
+          </p>
+        </div>
+
+        {loadingTerm ? <p className="status-line">Loading term...</p> : null}
+
+        {!loadingTerm && !selectedTerm ? (
+          <div className="empty-state">
+            Term not found. It may have been deleted or moved.
+          </div>
+        ) : null}
+
+        {selectedTerm && mode === 'guest' ? (
+          <>
+            <div className="detail-meta-row">
+              <span className="pill tone-accent">Courses: {courses.length}</span>
+              <span className="pill">Created {formatDate(selectedTerm.created_at)}</span>
+            </div>
+
+            <div className="term-workspace-grid">
+              <section className="workspace-column workspace-column-courses">
+                <h2>Created Courses</h2>
+                {!courses.length ? (
+                  <p className="empty-state">No courses yet. Add your first course for this term.</p>
+                ) : (
+                  <ul className="course-list">
+                    {courses.map((course) => (
+                      <li key={course.id} className="course-row">
+                        <div>
+                          <p className="course-name">{course.course_code}</p>
+                          <p className="term-meta">
+                            {course.title} · {course.credit} credit
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          className="secondary danger"
+                          onClick={() => onDeleteCourse(course.id)}
+                        >
+                          Delete
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </section>
+
+              <section className="workspace-column workspace-column-create">
+                <form onSubmit={onCreateCourse} className="course-form" aria-label="Create course form">
+                  <h2>Add Course</h2>
+
+                  <label htmlFor="course-code" className="field-label">
+                    Course Code
+                  </label>
+                  <input
+                    id="course-code"
+                    value={courseCode}
+                    onChange={(event) => setCourseCode(event.target.value)}
+                    placeholder="CSE220"
+                    maxLength={24}
+                    required
+                  />
+
+                  <label htmlFor="course-title" className="field-label">
+                    Course Title
+                  </label>
+                  <input
+                    id="course-title"
+                    value={courseTitle}
+                    onChange={(event) => setCourseTitle(event.target.value)}
+                    placeholder="Data Structures"
+                    maxLength={120}
+                    required
+                  />
+
+                  <label htmlFor="course-credit" className="field-label">
+                    Credit
+                  </label>
+                  <input
+                    id="course-credit"
+                    type="number"
+                    min="0.5"
+                    step="0.5"
+                    value={courseCredit}
+                    onChange={(event) => setCourseCredit(event.target.value)}
+                    required
+                  />
+
+                  <button type="submit">Save Course</button>
+                </form>
+
+                {error ? <p className="feedback error">{error}</p> : null}
+                {success ? <p className="feedback success">{success}</p> : null}
+              </section>
+            </div>
+          </>
+        ) : null}
+
+        {selectedTerm && mode !== 'guest' ? (
+          <p className="empty-state">Switch to guest mode to use offline course creation for this term right now.</p>
+        ) : null}
       </section>
     </main>
   );
@@ -820,6 +1384,7 @@ function App() {
     <Routes>
       <Route path="/" element={<Navigate to="/dashboard" replace />} />
       <Route path="/dashboard" element={<DashboardPage session={session} onLogout={onLogout} />} />
+      <Route path="/dashboard/terms/:termId" element={<TermWorkspacePage session={session} />} />
       <Route path="/auth" element={<AuthPage session={session} />} />
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>

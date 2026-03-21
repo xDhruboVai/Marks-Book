@@ -13,17 +13,20 @@ function getInitialState() {
       return {
         userId: null,
         terms: [],
+        courses: [],
       };
     }
     const parsed = JSON.parse(raw);
     return {
       userId: parsed.userId || null,
       terms: Array.isArray(parsed.terms) ? parsed.terms : [],
+      courses: Array.isArray(parsed.courses) ? parsed.courses : [],
     };
   } catch (_error) {
     return {
       userId: null,
       terms: [],
+      courses: [],
     };
   }
 }
@@ -125,6 +128,79 @@ export function useMarksStore() {
       const next = {
         ...state,
         terms: state.terms.filter((term) => String(term.id) !== String(termId)),
+        courses: state.courses.filter((course) => String(course.term_id) !== String(termId)),
+      };
+      persist(next);
+    },
+    [persist, state]
+  );
+
+  const createLocalCourse = useCallback(
+    (termId, payload) => {
+      const normalizedTermId = String(termId);
+      const term = state.terms.find((item) => String(item.id) === normalizedTermId);
+      if (!term) {
+        throw new Error('Term not found in guest mode');
+      }
+
+      const cleanedCode = String(payload?.course_code || '').trim().toUpperCase();
+      const cleanedTitle = String(payload?.title || '').trim();
+      const creditValue = Number(payload?.credit);
+
+      if (!cleanedCode) {
+        throw new Error('Course code is required');
+      }
+
+      if (!cleanedTitle) {
+        throw new Error('Course title is required');
+      }
+
+      if (!Number.isFinite(creditValue) || creditValue <= 0) {
+        throw new Error('Credit must be a positive number');
+      }
+
+      const duplicateExists = state.courses.some(
+        (course) =>
+          String(course.term_id) === normalizedTermId &&
+          String(course.course_code || '').toLowerCase() === cleanedCode.toLowerCase()
+      );
+      if (duplicateExists) {
+        throw new Error('Course code already exists in this term');
+      }
+
+      const now = new Date().toISOString();
+      const course = {
+        id: createId('tmp_course_'),
+        term_id: normalizedTermId,
+        user_id: null,
+        course_code: cleanedCode,
+        title: cleanedTitle,
+        credit: creditValue,
+        created_at: now,
+        updated_at: now,
+      };
+
+      const next = {
+        ...state,
+        courses: [course, ...state.courses],
+      };
+      persist(next);
+      return course;
+    },
+    [persist, state]
+  );
+
+  const deleteLocalCourse = useCallback(
+    (courseId) => {
+      const normalizedCourseId = String(courseId);
+      const courseExists = state.courses.some((course) => String(course.id) === normalizedCourseId);
+      if (!courseExists) {
+        throw new Error('Course not found in guest mode');
+      }
+
+      const next = {
+        ...state,
+        courses: state.courses.filter((course) => String(course.id) !== normalizedCourseId),
       };
       persist(next);
     },
@@ -132,13 +208,17 @@ export function useMarksStore() {
   );
 
   const terms = useMemo(() => state.terms, [state.terms]);
+  const courses = useMemo(() => state.courses, [state.courses]);
 
   return {
     storageKey: STORAGE_KEY,
     userId: state.userId,
     terms,
+    courses,
     createLocalTerm,
     updateLocalTerm,
     deleteLocalTerm,
+    createLocalCourse,
+    deleteLocalCourse,
   };
 }
